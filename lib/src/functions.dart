@@ -5,14 +5,15 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:cli_util/cli_logging.dart';
 import 'package:coverage/coverage.dart' as coverage;
 import 'package:glob/glob.dart';
-import 'package:lcov/lcov.dart';
+import 'package:lcov_dart/lcov_dart.dart';
 import 'package:path/path.dart' as path;
 
 final _sep = path.separator;
 
-List<File> findTestFiles(Directory packageRoot, {Glob excludeGlob}) {
+List<File> findTestFiles(Directory packageRoot, {Glob? excludeGlob}) {
   final testsPath = path.join(packageRoot.absolute.path, 'test');
   final testsRoot = Directory(testsPath);
   final contents = testsRoot.listSync(recursive: true);
@@ -67,7 +68,9 @@ void generateMainScript(Directory packageRoot, List<File> testFiles) {
     ..writeln('// Consider adding this file to your .gitignore.')
     ..writeln();
   imports.forEach(buffer.writeln);
-  buffer..writeln()..writeln('void main() {');
+  buffer
+    ..writeln()
+    ..writeln('void main() {');
   mainBody.forEach(buffer.writeln);
   buffer.writeln('}');
   File(
@@ -110,13 +113,23 @@ Future<void> runTestsAndCollect(String packageRoot, String port,
         'Try setting a different port with --port option.');
   }
 
+  Logger logger;
+  Progress progress;
+  logger = Logger.standard();
+  progress = logger.progress('please wait ...');
+
   Map<String, Map<int, int>> hitmap;
   try {
-    final data = await coverage.collect(serviceUri, true, true, false, {});
+    final data = await coverage.collect(serviceUri, true, true, false, {},
+        timeout: Duration(milliseconds: 15 * 60 * 1000));
     hitmap = await coverage.createHitmap(data['coverage']);
-  } finally {
-    await process.stderr.drain<List<int>>();
+    await process.stderr.drain<List<int>?>();
+    progress.finish();
+  } catch (e, s) {
+    progress.finish();
+    throw 'Tests timeout: there are some problems with the unit test code, \nerror: $e, \nstacktrace:$s';
   }
+
   final exitStatus = await process.exitCode;
   if (exitStatus != 0) {
     throw 'Tests failed with exit code $exitStatus';
@@ -139,7 +152,7 @@ Future<void> runTestsAndCollect(String packageRoot, String port,
 }
 
 // copied from `coverage` package
-Uri _extractObservatoryUri(String str) {
+Uri? _extractObservatoryUri(String str) {
   const kObservatoryListening = 'Observatory listening on ';
   final msgPos = str.indexOf(kObservatoryListening);
   if (msgPos == -1) return null;
@@ -157,7 +170,10 @@ double calculateLineCoverage(File lcovReport) {
   var totalLines = 0;
   var hitLines = 0;
   for (final rec in report.records) {
-    for (final line in rec.lines.data) {
+    if (rec == null || rec.lines == null) {
+      continue;
+    }
+    for (final line in rec.lines!.data) {
       totalLines++;
       hitLines += (line.executionCount > 0) ? 1 : 0;
     }
@@ -187,7 +203,8 @@ class _BadgeMetrics {
   final int rightX;
   final int rightLength;
 
-  _BadgeMetrics({this.width, this.rightX, this.rightLength});
+  _BadgeMetrics(
+      {required this.width, required this.rightX, required this.rightLength});
 
   factory _BadgeMetrics.forPercentage(double value) {
     final pct = (value * 100).floor();
@@ -221,18 +238,18 @@ String _color(double percentage) {
     0.9: _Color(0x97, 0xCA, 0x00),
     1.0: _Color(0x44, 0xCC, 0x11),
   };
-  double lower;
-  double upper;
+  var lower = 0.0;
+  var upper = 1.0;
   for (final key in map.keys) {
-    if (percentage < key) {
+    if (percentage <= key) {
       upper = key;
       break;
     }
-    if (key < 1.0) lower = key;
+    if (key <= 1.0) lower = key;
   }
-  upper ??= 1.0;
-  final lowerColor = map[lower];
-  final upperColor = map[upper];
+
+  final lowerColor = map[lower]!;
+  final upperColor = map[upper]!;
   final range = upper - lower;
   final rangePct = (percentage - lower) / range;
   final pctLower = 1 - rangePct;
